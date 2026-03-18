@@ -69,10 +69,12 @@ def lookup_vendor(mac):
 
 
 def enrich_scan(devices):
-    """Add vendor information to a list of scanned devices.
+    """Add vendor and device_type information to a list of scanned devices.
 
     Respects the MACVendors free-tier rate limit (1 req/s).
     """
+    from .scanner import _guess_device_type
+
     cache = _load_cache()
     uncached_count = 0
 
@@ -80,16 +82,20 @@ def enrich_scan(devices):
         mac = device.get("mac", "")
         if not mac:
             device["vendor"] = "Unknown"
-            continue
-
-        oui = _oui_prefix(mac)
-        if oui in cache:
-            device["vendor"] = cache[oui]
         else:
-            # Rate-limit API calls
-            if uncached_count > 0:
-                time.sleep(_RATE_LIMIT_DELAY)
-            device["vendor"] = lookup_vendor(mac)
-            uncached_count += 1
+            oui = _oui_prefix(mac)
+            if oui in cache:
+                device["vendor"] = cache[oui]
+            else:
+                # Rate-limit API calls
+                if uncached_count > 0:
+                    time.sleep(_RATE_LIMIT_DELAY)
+                device["vendor"] = lookup_vendor(mac)
+                uncached_count += 1
+
+        # Guess device type from hostname + vendor
+        device["device_type"] = _guess_device_type(
+            device.get("hostname", ""), device.get("vendor", "")
+        )
 
     return devices

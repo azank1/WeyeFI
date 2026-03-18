@@ -21,11 +21,14 @@ def _print_devices(devices, header="Devices"):
     for d in devices:
         vendor = d.get("vendor", "")
         name = d.get("hostname") or d.get("name") or ""
+        dtype = d.get("device_type", "")
         parts = [d["ip"]]
         if d.get("mac"):
             parts.append(d["mac"])
         if vendor and vendor != "Unknown":
             parts.append(f"[{vendor}]")
+        if dtype:
+            parts.append(f"<{dtype}>")
         if name:
             parts.append(f"({name})")
         print(f"  {' | '.join(parts)}")

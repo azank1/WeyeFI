@@ -14,8 +14,12 @@ class TestReadArpTable:
         192.168.1.99     0x1         0x0         00:00:00:00:00:00     *        wlan0
     """)
 
+    @patch("weyefi.scanner.subprocess.run")
     @patch("weyefi.scanner.Path")
-    def test_parses_proc_net_arp(self, mock_path_cls):
+    def test_parses_proc_net_arp(self, mock_path_cls, mock_run):
+        # Make `ip neigh show` return nothing so we fall through to /proc/net/arp
+        mock_run.return_value = MagicMock(stdout="")
+
         mock_path = MagicMock()
         mock_path.exists.return_value = True
         mock_path.read_text.return_value = self.ARP_CONTENT
