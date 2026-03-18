@@ -11,6 +11,7 @@ from .history import get_history, save_scan
 from .mac_lookup import enrich_scan
 from .manifest import add_device, diff_devices, load_manifest, save_manifest
 from .notifier import send_alert
+from .profiler import profile_device
 from .scanner import scan_network
 
 
@@ -180,6 +181,102 @@ def cmd_watch(args):
         print("\nWatch stopped.")
 
 
+def _print_profile(profile):
+    """Pretty-print a device profile."""
+    ip = profile["ip"]
+    print(f"\n{'=' * 60}")
+    print(f"  DEVICE PROFILE: {ip}")
+    print(f"{'=' * 60}")
+
+    # Identity
+    nb = profile.get("netbios", {})
+    if nb.get("computer_name"):
+        print(f"  Computer Name : {nb['computer_name']}")
+    if nb.get("user"):
+        print(f"  Username      : {nb['user']}")
+    if nb.get("workgroup"):
+        print(f"  Workgroup     : {nb['workgroup']}")
+    if profile.get("display_name"):
+        print(f"  Display Name  : {profile['display_name']}")
+
+    # OS / TTL
+    if profile.get("os_guess"):
+        print(f"  OS Guess      : {profile['os_guess']}")
+    if profile.get("ttl") is not None:
+        print(f"  TTL           : {profile['ttl']}")
+
+    # Open ports
+    ports = profile.get("open_ports", [])
+    if ports:
+        print(f"\n  OPEN PORTS ({len(ports)}):")
+        for p in ports:
+            print(f"    {p['port']:>5}/tcp  {p['service']}")
+    else:
+        print("\n  No open ports detected.")
+
+    # HTTP banners
+    banners = profile.get("http_banners", [])
+    if banners:
+        print("\n  HTTP BANNERS:")
+        for b in banners:
+            extra = f" — {b['extra']}" if b.get("extra") else ""
+            print(f"    :{b['port']}  {b['server']}{extra}")
+
+    # VPN
+    vpn = profile.get("vpn", {})
+    if vpn.get("vpn_detected"):
+        print("\n  !! VPN / TUNNEL DETECTED:")
+        for ind in vpn.get("indicators", []):
+            print(f"    - {ind}")
+    else:
+        print("\n  VPN: Not detected")
+
+    # Remote access
+    remote = profile.get("remote_access", {})
+    if remote.get("remote_access"):
+        print("\n  !! REMOTE ACCESS SERVICES:")
+        for svc in remote.get("services", []):
+            print(f"    - {svc['service']} (port {svc['port']})")
+    else:
+        print("  Remote Access: None detected")
+
+    print(f"{'=' * 60}")
+
+
+def cmd_trace(args):
+    """Deep profile a specific device or all devices on the network."""
+    manifest = load_manifest(args.manifest)
+    subnet = args.subnet or manifest.get("network_subnet", "192.168.1.0/24")
+
+    if args.target:
+        # Profile a specific IP
+        targets = [args.target]
+    else:
+        # Scan network first, then profile all found devices
+        print(f"Scanning {subnet} to find targets ...")
+        devices = scan_network(subnet)
+        devices = enrich_scan(devices)
+        targets = [d["ip"] for d in devices]
+        print(f"Found {len(targets)} devices. Profiling each one ...\n")
+
+    for ip in targets:
+        print(f"\nTracing {ip} ...", flush=True)
+        profile = profile_device(ip)
+        _print_profile(profile)
+
+        # Alert on VPN or remote access
+        vpn = profile.get("vpn", {})
+        remote = profile.get("remote_access", {})
+        alerts = []
+        if vpn.get("vpn_detected"):
+            alerts.append(f"VPN detected on {ip}")
+        if remote.get("remote_access"):
+            svc_names = [s["service"] for s in remote.get("services", [])]
+            alerts.append(f"Remote access on {ip}: {', '.join(svc_names)}")
+        if alerts:
+            send_alert("WeyeFI Trace Alert", "; ".join(alerts))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="weyefi",
@@ -225,6 +322,15 @@ def main():
         help="Seconds between scans (default: 300)",
     )
 
+    # trace
+    p_trace = subparsers.add_parser(
+        "trace", help="Deep profile devices: ports, names, VPN, remote access"
+    )
+    p_trace.add_argument(
+        "target", nargs="?", default=None,
+        help="IP address to profile (omit to profile all devices)",
+    )
+
     args = parser.parse_args()
 
     commands = {
@@ -233,6 +339,7 @@ def main():
         "history": cmd_history,
         "manifest-add": cmd_manifest_add,
         "watch": cmd_watch,
+        "trace": cmd_trace,
     }
 
     if args.command in commands:

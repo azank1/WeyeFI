@@ -63,12 +63,20 @@ def _read_arp_table():
 
 
 def _ping_sweep(subnet):
-    """Ping all hosts in the subnet to populate the ARP cache.
+    """Discover live hosts using multiple techniques for maximum coverage.
 
-    Uses nmap -sn which, without root, falls back to TCP probes on 80/443.
+    Without root, nmap -sn only probes TCP 80/443 which misses many devices.
+    We combine multiple methods to catch everything:
+      1. nmap -sn (TCP 80/443 probes)
+      2. nmap TCP probe on common IoT/device ports
+      3. ARP-populated IPs from ip neigh
     """
     nm = nmap.PortScanner()
-    nm.scan(hosts=subnet, arguments="-sn")
+    # Standard ping sweep + probe extra ports that phones/TVs/consoles respond on
+    nm.scan(
+        hosts=subnet,
+        arguments="-sn -PA21,22,23,80,443,554,5353,8008,8080,8443,62078",
+    )
     return nm
 
 
@@ -165,8 +173,10 @@ def scan_network(subnet="192.168.1.0/24"):
     arp_map = _read_arp_table()
     mdns_map = _mdns_discover()
 
+    seen_ips = set()
     devices = []
     for host in nm.all_hosts():
+        seen_ips.add(host)
         addresses = nm[host].get("addresses", {})
         # Prefer nmap MAC (only available as root), fall back to ARP cache
         mac = addresses.get("mac", arp_map.get(host, ""))
@@ -187,4 +197,29 @@ def scan_network(subnet="192.168.1.0/24"):
             }
         )
 
+    # Add any hosts found in ARP cache but missed by nmap
+    for ip, mac in arp_map.items():
+        if ip not in seen_ips and _ip_in_subnet(ip, subnet):
+            mdns_name = mdns_map.get(ip, "")
+            devices.append(
+                {
+                    "ip": ip,
+                    "mac": mac.upper(),
+                    "hostname": mdns_name,
+                    "state": "up",
+                    "mdns_name": mdns_name,
+                    "device_type": "",
+                }
+            )
+
     return devices
+
+
+def _ip_in_subnet(ip, subnet):
+    """Simple check if an IP is in a /24 subnet (covers most home networks)."""
+    try:
+        ip_parts = ip.split(".")
+        subnet_base = subnet.split("/")[0].split(".")
+        return ip_parts[:3] == subnet_base[:3]
+    except (IndexError, ValueError):
+        return False
