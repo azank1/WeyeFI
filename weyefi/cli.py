@@ -7,6 +7,13 @@ import time
 
 from . import __version__
 from .dns_check import run_all_dns_checks
+from .encrypted_dns import (
+    DOH_PROVIDERS,
+    doh_resolve,
+    dns_leak_test,
+    get_setup_instructions,
+    privacy_audit,
+)
 from .history import get_history, save_scan
 from .mac_lookup import enrich_scan
 from .manifest import add_device, diff_devices, load_manifest, save_manifest
@@ -277,6 +284,108 @@ def cmd_trace(args):
             send_alert("WeyeFI Trace Alert", "; ".join(alerts))
 
 
+def _print_privacy_audit(audit):
+    """Pretty-print privacy audit results."""
+    print(f"\n{'=' * 60}")
+    print("  PRIVACY AUDIT")
+    print(f"{'=' * 60}")
+
+    dns_list = audit.get("system_dns", [])
+    print(f"  System DNS   : {', '.join(dns_list) if dns_list else 'Unknown'}")
+    enc = "YES" if audit.get("dns_encrypted") else "NO"
+    enc_icon = "ok" if audit.get("dns_encrypted") else "!!"
+    print(f"  DNS Encrypted: [{enc_icon}] {enc}")
+
+    isp = "NO" if not audit.get("isp_can_see_queries") else "YES"
+    isp_icon = "ok" if not audit.get("isp_can_see_queries") else "!!"
+    print(f"  ISP Can Snoop: [{isp_icon}] {isp}")
+
+    leak = audit.get("dns_leak", False)
+    leak_icon = "!!" if leak else "ok"
+    print(f"  DNS Leak     : [{leak_icon}] {'DETECTED' if leak else 'None'}")
+
+    recs = audit.get("recommendations", [])
+    if recs:
+        print(f"\n  RECOMMENDATIONS:")
+        for r in recs:
+            print(f"    > {r}")
+
+    print(f"{'=' * 60}")
+
+
+def cmd_privacy(args):
+    """Run privacy audit on this device."""
+    print("Running privacy audit ...")
+    audit = privacy_audit()
+    _print_privacy_audit(audit)
+
+    if args.setup:
+        provider = args.provider or "cloudflare"
+        inst = get_setup_instructions(provider)
+        print(f"\n{'=' * 60}")
+        print(f"  SETUP: {inst['provider']}")
+        print(f"  Privacy: {inst['privacy_policy']}")
+        print(f"{'=' * 60}")
+        for method_key, method in inst["methods"].items():
+            print(f"\n  [{method['name']}]")
+            print(f"  Covers: {method['covers']}")
+            for i, step in enumerate(method["steps"], 1):
+                print(f"    {i}. {step}")
+        print(f"{'=' * 60}")
+
+
+def cmd_doh_resolve(args):
+    """Resolve a domain using encrypted DNS-over-HTTPS."""
+    domain = args.domain
+    provider = args.provider or "cloudflare"
+
+    print(f"Resolving {domain} via DoH ({provider}) ...")
+    result = doh_resolve(domain, provider)
+
+    print(f"\n  Domain   : {result['domain']}")
+    print(f"  Provider : {result['provider']}")
+    print(f"  Encrypted: {'YES' if result['encrypted'] else 'NO'}")
+    if result.get("error"):
+        print(f"  Error    : {result['error']}")
+    elif result["ips"]:
+        print(f"  IPs      : {', '.join(result['ips'])}")
+        print(f"  TTL      : {result['ttl']}s")
+    else:
+        print(f"  IPs      : (none)")
+
+    if args.compare:
+        print(f"\n  Comparing with system DNS ...")
+        try:
+            import dns.resolver
+            sys_r = dns.resolver.Resolver()
+            sys_ips = sorted({r.address for r in sys_r.resolve(domain, "A")})
+            print(f"  System DNS: {', '.join(sys_ips)}")
+            doh_ips = sorted(result.get("ips", []))
+            if sys_ips == doh_ips:
+                print(f"  [ok] Results match — no DNS tampering detected")
+            else:
+                print(f"  [!!] MISMATCH — possible DNS tampering or CDN difference")
+        except Exception as e:
+            print(f"  System DNS: Error ({e})")
+
+
+def cmd_leak_test(args):
+    """Run DNS leak test across all DoH providers."""
+    print("Running DNS leak test ...")
+    results = dns_leak_test()
+    print(f"\n{'=' * 60}")
+    print("  DNS LEAK TEST")
+    print(f"{'=' * 60}")
+    for name in DOH_PROVIDERS:
+        if name in results:
+            r = results[name]
+            icon = "ok" if r.get("match") else ("!!" if r.get("match") is False else "??")
+            print(f"  [{icon}] {DOH_PROVIDERS[name]['name']}")
+            print(f"       DoH IPs   : {', '.join(r['doh_ips'])}")
+            print(f"       System IPs: {', '.join(r['system_ips'])}")
+    print(f"{'=' * 60}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="weyefi",
@@ -331,6 +440,32 @@ def main():
         help="IP address to profile (omit to profile all devices)",
     )
 
+    # privacy
+    p_privacy = subparsers.add_parser("privacy", help="Audit DNS privacy of this device")
+    p_privacy.add_argument(
+        "--setup", action="store_true",
+        help="Show setup instructions for encrypted DNS",
+    )
+    p_privacy.add_argument(
+        "--provider", choices=list(DOH_PROVIDERS.keys()), default=None,
+        help="DoH provider for setup instructions (default: cloudflare)",
+    )
+
+    # doh-resolve
+    p_doh = subparsers.add_parser("doh-resolve", help="Resolve a domain via encrypted DoH")
+    p_doh.add_argument("domain", help="Domain to resolve")
+    p_doh.add_argument(
+        "--provider", choices=list(DOH_PROVIDERS.keys()), default="cloudflare",
+        help="DoH provider (default: cloudflare)",
+    )
+    p_doh.add_argument(
+        "--compare", action="store_true",
+        help="Compare DoH results with system DNS",
+    )
+
+    # leak-test
+    subparsers.add_parser("leak-test", help="Test for DNS leaks across providers")
+
     args = parser.parse_args()
 
     commands = {
@@ -340,6 +475,9 @@ def main():
         "manifest-add": cmd_manifest_add,
         "watch": cmd_watch,
         "trace": cmd_trace,
+        "privacy": cmd_privacy,
+        "doh-resolve": cmd_doh_resolve,
+        "leak-test": cmd_leak_test,
     }
 
     if args.command in commands:
