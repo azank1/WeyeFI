@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.env
+data/oui_cache.json
+data/scan_history.json
+*.db
+.venv/
+venv/

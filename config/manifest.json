@@ -1,0 +1,6 @@
+{
+  "known_devices": [],
+  "trusted_dns": ["8.8.8.8", "1.1.1.1"],
+  "monitored_domains": ["google.com", "example.com"],
+  "network_subnet": "192.168.1.0/24"
+}
